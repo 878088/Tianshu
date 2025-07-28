@@ -6,9 +6,7 @@ let 私钥开关 = false;
 let 咦这是我的私钥哎 = "";
 let 隐藏订阅 = false;
 let 嘲讽语 = "什么也没有";
-let 我的优选 = [
-  // 'www.visa.com',
-];
+let 我的优选 = [];
 let 我的优选TXT = [''];
 let 启用反代功能 = true;
 let 反代IP = 'fdip.houyitfg.asia';
@@ -17,7 +15,8 @@ let 启用SOCKS5全局反代 = false;
 let 我的SOCKS5账号 = 'admin:admin@52.71.4.197:1080';
 let 我的节点名字 = '天书11';
 let 启动控流机制 = false;
-let 转发地址 = ['hz-e94.pages.dev', 'fff-7rn.pages.dev', 'ffff-3oh.pages.dev', 'fffff-9gd.pages.dev', 'df-2dq.pages.dev'];
+let 转发地址 = ['teinworth.pages.dev','scarnato.pages.dev','shaginaw.pages.dev','parrin.pages.dev','offord.pages.dev','meyerson.pages.dev','lacom.pages.dev','harpe.pages.dev','rossetete.pages.dev'];
+let 当前轮询索引 = 0;
 
 const 读取环境变量 = (name, fallback, env) => {
   const raw = env?.[name];
@@ -138,42 +137,56 @@ async function 负载均衡(访问请求) {
   if (!私钥开关 && 验证VL的密钥(new Uint8Array(解密数据.slice(1, 17))) !== 哎呀呀这是我的VL密钥) {
     return new Response('连接验证失败', { status: 403 });
   }
-  let 尝试次数 = 2; // 最多重试 2 次
-  while (尝试次数 > 0) {
-    try {
-      const 请求列表 = await 构建新请求(访问请求);
-      if (请求列表.length === 0) {
-        console.error('无可用副 Worker：转发地址为空');
-        return new Response('无可用副 Worker：转发地址为空', { status: 400 });
+
+  let 尝试次数 = 2;
+  const 最大请求时间 = 500;
+  let 请求列表 = await 构建新请求(访问请求);
+
+  if (请求列表.length === 0) {
+    console.error('无可用副 Worker：转发地址为空');
+    return new Response('无可用副 Worker：转发地址为空', { status: 400 });
+  }
+
+  while (尝试次数 > 0 && 请求列表.length > 0) {
+    
+    const 响应Promises = 请求列表.map(async (请求) => {
+      const 控制器 = new AbortController();
+      const 超时 = setTimeout(() => 控制器.abort(), 最大请求时间);
+      try {
+        console.log(`请求副 Worker: ${请求.url}`);
+        const 响应 = await fetch(请求, { signal: 控制器.signal });
+        clearTimeout(超时);
+        console.log(`副 Worker ${请求.url} 响应状态: ${响应.status}`);
+        if (响应.status === 101) {
+          console.log(`负载均衡选择成功: ${响应.url}`);
+          return 响应;
+        }
+        throw new Error(`副 Worker ${请求.url} 状态码不是101`);
+      } catch (错误) {
+        clearTimeout(超时);
+        console.error(`副 Worker ${请求.url} 请求失败: ${错误.message}`);
+        return null;
       }
-      const 响应 = await Promise.any(
-        请求列表.map(async (请求, 索引) => {
-          console.log(`请求副 Worker: ${请求.url}`);
-          const 控制器 = new AbortController();
-          const 超时 = setTimeout(() => 控制器.abort(), 10000);
-          try {
-            const 响应 = await fetch(请求, { signal: 控制器.signal });
-            clearTimeout(超时);
-            console.log(`副 Worker ${请求.url} 响应状态: ${响应.status}`);
-            return 响应.status === 101 ? 响应 : Promise.reject(`副 Worker ${请求.url} 状态码不是101`);
-          } catch (错误) {
-            clearTimeout(超时);
-            console.error(`副 Worker ${请求.url} 请求失败: ${错误.message}`);
-            throw 错误;
-          }
-        })
-      );
-      console.log(`负载均衡选择成功: ${响应.url}`);
-      return 响应;
-    } catch (错误) {
-      console.error(`负载均衡失败: ${错误.message}, 剩余尝试次数: ${尝试次数 - 1}`);
-      尝试次数--;
-      if (尝试次数 === 0) {
-        return new Response(`无可用副 Worker: ${错误.message}`, { status: 400 });
-      }
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    });
+
+    const 响应 = await Promise.race(响应Promises.filter(p => p));
+    if (响应) return 响应;
+
+    请求列表 = 请求列表.filter((_, i) => !响应Promises[i].then(res => res === null));
+    尝试次数--;
+
+    if (请求列表.length === 0 && 尝试次数 > 0) {
+      请求列表 = await 构建新请求(访问请求);
+      console.log('所有副 Worker 失败，重置请求列表并重试');
+    }
+
+    if (尝试次数 > 0 && 请求列表.length > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
+
+  console.error('所有副 Worker 均不可用');
+  return new Response('无可用副 Worker', { status: 503 });
 }
 
 function 使用64位加解密(还原混淆字符) {
@@ -213,13 +226,25 @@ async function 构建新请求(访问请求) {
   标头.set('socks5-global', 启用SOCKS5全局反代 ? 'true' : 'false');
   标头.set('safe-key', 哎呀呀这是我的ID啊);
   标头.set('kongliu-open', 启动控流机制 ? 'true' : 'false');
+  
+  const 请求URL = new URL(访问请求.url);
+  const 查询参数proxyip = 请求URL.searchParams.get('proxyip');
+  let 使用的反代IP = 反代IP;
+  
+  if (查询参数proxyip) {
+    使用的反代IP = 查询参数proxyip;
+  }
+
+  const 反代IP数组 = Array.isArray(使用的反代IP) ? 使用的反代IP : [使用的反代IP];
+  const 反代 = 反代IP数组[0];
+
   const 请求列表 = [];
   const 随机选择 = (数组) => {
     const arr = Array.isArray(数组) ? 数组 : [数组];
     return arr[Math.floor(Math.random() * arr.length)];
   };
+  
   for (const 地址 of 转发地址) {
-    const 反代 = 随机选择(反代IP);
     const socks5 = 随机选择(我的SOCKS5账号);
     标头.set('proxyip', 反代);
     标头.set('socks5', socks5);
@@ -333,7 +358,7 @@ function 给我小动物配置文件(hostName, 规则集配置 = null, 规则配
 - RULE-SET,cncidr,DIRECT,no-resolve
 - GEOSITE,cn,DIRECT
 - GEOIP,CN,DIRECT,no-resolve
-- MATCH,漏网之鱼,🚀 负载均衡-散列`;
+- MATCH,漏网之鱼,🚀 负载均衡-轮询`;
   return `
 dns:
   nameserver:

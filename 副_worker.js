@@ -1,7 +1,7 @@
 import { connect } from 'cloudflare:sockets';
 
-const 哎呀呀这是我的ID啊 = "123456";
-const 哎呀呀这是我的VL密钥 = "743539b7-56e6-4210-a3c5-b8debcef162f";
+const 哎呀呀这是我的ID啊 = "878088";
+const 哎呀呀这是我的VL密钥 = "834a8c97-5f1c-45d2-a292-aa1c52b63845";
 
 export default {
   async fetch(访问请求) {
@@ -116,12 +116,12 @@ async function 尝试建立TCP连接(地址, 端口, 地址类型) {
       TCP接口 = connect({ hostname: 反代IP地址, port: 反代IP端口 });
       await Promise.race([
         TCP接口.opened,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('反代连接超时')), 1000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('反代连接超时')), 500))
       ]);
       console.log(`反代连接成功: ${反代IP地址}:${反代IP端口}`);
       return TCP接口;
     } catch (error) {
-      console.warn(`反代连接失败: ${反代IP地址}:${反代IP端口}, 错误: ${error.message}`);
+      console.warn(`反代连接失败: ${反代IP}, 错误: ${error.message}`);
     }
   }
   if (启用SOCKS5反代 || 启用SOCKS5全局反代) {
