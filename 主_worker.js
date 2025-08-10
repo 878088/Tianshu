@@ -13,10 +13,18 @@ let 反代IP = 'fdip.houyitfg.asia';
 let 启用SOCKS5反代 = false;
 let 启用SOCKS5全局反代 = false;
 let 我的SOCKS5账号 = 'admin:admin@52.71.4.197:1080';
-let 我的节点名字 = '天书11';
+let 我的节点名字 = '天书-11-负载均衡';
 let 启动控流机制 = false;
-let 转发地址 = ['teinworth.pages.dev','scarnato.pages.dev','shaginaw.pages.dev','parrin.pages.dev','offord.pages.dev','meyerson.pages.dev','lacom.pages.dev','harpe.pages.dev','rossetete.pages.dev'];
-let 当前轮询索引 = 0;
+let 转发地址 = ['1-c50.pages.dev'];
+let 下一级副Worker地址 = ['2-5uf.pages.dev', '3-zm1.pages.dev', '4-7ap.pages.dev'];
+
+// 内存缓存
+let 缓存订阅页面 = null;
+let 缓存通用配置文件 = null;
+let 缓存小动物配置文件 = null;
+let 缓存节点列表 = null;
+let 节点列表过期时间 = 0;
+const 缓存过期时间 = 24 * 60 * 60 * 1000; // 1 天
 
 const 读取环境变量 = (name, fallback, env) => {
   const raw = env?.[name];
@@ -27,6 +35,9 @@ const 读取环境变量 = (name, fallback, env) => {
     if (trimmed === 'false') return false;
     if (trimmed.includes('\n')) {
       return trimmed.split('\n').map(item => item.trim()).filter(Boolean);
+    }
+    if (trimmed.includes(',')) {
+      return trimmed.split(',').map(item => item.trim()).filter(Boolean);
     }
     if (!isNaN(trimmed) && trimmed !== '') return Number(trimmed);
     return trimmed;
@@ -42,6 +53,11 @@ export default {
     我的优选TXT = 读取环境变量('TXT', 我的优选TXT, env);
     启动控流机制 = 读取环境变量('KL', 启动控流机制, env);
     反代IP = 读取环境变量('PROXYIP', 反代IP, env);
+    if (typeof 反代IP === 'string') {
+      反代IP = 反代IP.split(',').map(item => item.trim()).filter(Boolean);
+    } else if (!Array.isArray(反代IP)) {
+      反代IP = [反代IP];
+    }
     我的SOCKS5账号 = 读取环境变量('SOCKS5', 我的SOCKS5账号, env);
     启用SOCKS5反代 = 读取环境变量('SOCKS5OPEN', 启用SOCKS5反代, env);
     启用SOCKS5全局反代 = 读取环境变量('SOCKS5GLOBAL', 启用SOCKS5全局反代, env);
@@ -52,79 +68,105 @@ export default {
     启用反代功能 = 读取环境变量('启用反代功能', 启用反代功能, env);
     我的节点名字 = 读取环境变量('我的节点名字', 我的节点名字, env);
     转发地址 = 读取环境变量('转发地址', 转发地址, env);
-    console.log(`转发地址: ${JSON.stringify(转发地址)}`);
+    下一级副Worker地址 = 读取环境变量('下一级副Worker地址', 下一级副Worker地址, env);
 
     const 规则集配置 = env.RULE_PROVIDERS || null;
     const 规则配置 = env.RULES || null;
     const 读取我的请求标头 = 访问请求.headers.get('Upgrade');
     const url = new URL(访问请求.url);
 
-    if (!读取我的请求标头 || 读取我的请求标头 !== 'websocket') {
-      if (我的优选TXT && 我的优选TXT.length > 0) {
+    if (读取我的请求标头 === 'websocket') {
+      if (url.pathname === '/static/config.json') {
+        if (私钥开关) {
+          const 验证我的私钥 = 访问请求.headers.get('my-key');
+          if (验证我的私钥 !== 咦这是我的私钥哎) {
+            return new Response(JSON.stringify({ error: '私钥验证失败' }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+        const wsResponse = await 负载均衡(访问请求);
+        if (wsResponse.status === 101) {
+          return wsResponse;
+        }
+        return new Response(JSON.stringify({ error: 'WebSocket处理失败' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } else {
+        // 记录无效路径并伪装为404页面
+        console.log(`Invalid WebSocket path: ${url.pathname}, IP: ${访问请求.headers.get('cf-connecting-ip')}`);
+        return new Response('<html><body>404 Not Found</body></html>', {
+          status: 404,
+          headers: { 'Content-Type': 'text/html' }
+        });
+      }
+    }
+
+    // 非WebSocket请求处理
+    if (我的优选TXT && 我的优选TXT.length > 0) {
+      const 当前时间 = Date.now();
+      if (!缓存节点列表 || 当前时间 > 节点列表过期时间) {
         const 链接数组 = Array.isArray(我的优选TXT) ? 我的优选TXT : [我的优选TXT];
         const 所有节点 = [];
         for (const 链接 of 链接数组) {
           try {
-            const 响应 = await fetch(链接);
+            const 响应 = await fetch(链接, { signal: AbortSignal.timeout(3000) });
             const 文本 = await 响应.text();
             const 节点 = 文本.split('\n').map(line => line.trim()).filter(line => line);
             所有节点.push(...节点);
-          } catch (e) {
-            console.warn(`无法获取或解析链接: ${链接}`, e);
-          }
+          } catch (e) {}
         }
         if (所有节点.length > 0) {
-          我的优选 = 所有节点;
+          缓存节点列表 = 所有节点;
+          节点列表过期时间 = 当前时间 + 缓存过期时间;
+          我的优选 = 缓存节点列表;
         }
+      } else {
+        我的优选 = 缓存节点列表;
       }
-      switch (url.pathname) {
-        case `/${哎呀呀这是我的ID啊}`: {
-          const 订阅页面 = 给我订阅页面(哎呀呀这是我的ID啊, 访问请求.headers.get('Host'));
-          return new Response(`${订阅页面}`, {
+    }
+    switch (url.pathname) {
+      case `/${哎呀呀这是我的ID啊}`: {
+        const 订阅页面 = 给我订阅页面(哎呀呀这是我的ID啊, 访问请求.headers.get('Host'));
+        return new Response(订阅页面, {
+          status: 200,
+          headers: { "Content-Type": "text/plain;charset=utf-8" }
+        });
+      }
+      case `/${哎呀呀这是我的ID啊}/${转码}${转码2}`: {
+        if (隐藏订阅) {
+          return new Response(嘲讽语, {
             status: 200,
             headers: { "Content-Type": "text/plain;charset=utf-8" }
           });
         }
-        case `/${哎呀呀这是我的ID啊}/${转码}${转码2}`: {
-          if (隐藏订阅) {
-            return new Response(`${嘲讽语}`, {
-              status: 200,
-              headers: { "Content-Type": "text/plain;charset=utf-8" }
-            });
-          } else {
-            const 通用配置文件 = 给我通用配置文件(访问请求.headers.get('Host'));
-            return new Response(`${通用配置文件}`, {
-              status: 200,
-              headers: { "Content-Type": "text/plain;charset=utf-8" }
-            });
-          }
-        }
-        case `/${哎呀呀这是我的ID啊}/${小猫}${咪}`: {
-          if (隐藏订阅) {
-            return new Response(`${嘲讽语}`, {
-              status: 200,
-              headers: { "Content-Type": "text/plain;charset=utf-8" }
-            });
-          } else {
-            const 小动物配置文件 = 给我小动物配置文件(访问请求.headers.get('Host'), 规则集配置, 规则配置);
-            return new Response(`${小动物配置文件}`, {
-              status: 200,
-              headers: { "Content-Type": "text/plain;charset=utf-8" }
-            });
-          }
-        }
-        default:
-          return new Response('Hello World!', { status: 200 });
+        const 通用配置文件 = 给我通用配置文件(访问请求.headers.get('Host'));
+        return new Response(通用配置文件, {
+          status: 200,
+          headers: { "Content-Type": "text/plain;charset=utf-8" }
+        });
       }
-    } else if (读取我的请求标头 === 'websocket') {
-      if (私钥开关) {
-        const 验证我的私钥 = 访问请求.headers.get('my-key');
-        if (验证我的私钥 !== 咦这是我的私钥哎) {
-          return new Response('私钥验证失败', { status: 403 });
+      case `/${哎呀呀这是我的ID啊}/${小猫}${咪}`: {
+        if (隐藏订阅) {
+          return new Response(嘲讽语, {
+            status: 200,
+            headers: { "Content-Type": "text/plain;charset=utf-8" }
+          });
         }
+        const 小动物配置文件 = 给我小动物配置文件(访问请求.headers.get('Host'), 规则集配置, 规则配置);
+        return new Response(小动物配置文件, {
+          status: 200,
+          headers: { "Content-Type": "text/plain;charset=utf-8" }
+        });
       }
-      return await 负载均衡(访问请求);
-    }
+      default:
+        return new Response('<html><body>Hello World! This is a static page.</body></html>', {
+          status: 200,
+          headers: { "Content-Type": "text/html;charset=utf-8" }
+        });
+      }
   }
 };
 
@@ -132,123 +174,131 @@ async function 负载均衡(访问请求) {
   const 读取我的加密访问内容数据头 = 访问请求.headers.get('sec-websocket-protocol');
   const 解密数据 = 使用64位加解密(读取我的加密访问内容数据头);
   if (!解密数据) {
-    return new Response('Base64 解码失败', { status: 400 });
+    return new Response('Base64解码失败', { status: 400 });
   }
   if (!私钥开关 && 验证VL的密钥(new Uint8Array(解密数据.slice(1, 17))) !== 哎呀呀这是我的VL密钥) {
     return new Response('连接验证失败', { status: 403 });
   }
 
-  let 尝试次数 = 2;
-  const 最大请求时间 = 500;
-  let 请求列表 = await 构建新请求(访问请求);
-
-  if (请求列表.length === 0) {
-    console.error('无可用副 Worker：转发地址为空');
-    return new Response('无可用副 Worker：转发地址为空', { status: 400 });
-  }
-
-  while (尝试次数 > 0 && 请求列表.length > 0) {
-    
-    const 响应Promises = 请求列表.map(async (请求) => {
-      const 控制器 = new AbortController();
-      const 超时 = setTimeout(() => 控制器.abort(), 最大请求时间);
-      try {
-        console.log(`请求副 Worker: ${请求.url}`);
-        const 响应 = await fetch(请求, { signal: 控制器.signal });
-        clearTimeout(超时);
-        console.log(`副 Worker ${请求.url} 响应状态: ${响应.status}`);
-        if (响应.status === 101) {
-          console.log(`负载均衡选择成功: ${响应.url}`);
-          return 响应;
-        }
-        throw new Error(`副 Worker ${请求.url} 状态码不是101`);
-      } catch (错误) {
-        clearTimeout(超时);
-        console.error(`副 Worker ${请求.url} 请求失败: ${错误.message}`);
-        return null;
+  try {
+    const 是Telegram = 验证Telegram地址(解密数据);
+    let 尝试次数 = 2;
+    while (尝试次数 > 0) {
+      const 请求列表 = await 构建新请求(访问请求);
+      if (请求列表.length === 0) {
+        return new Response('无可用副Worker', { status: 400 });
       }
-    });
 
-    const 响应 = await Promise.race(响应Promises.filter(p => p));
-    if (响应) return 响应;
+      for (const 请求 of 请求列表) {
+        const 控制器 = new AbortController();
+        const 动态超时 = 是Telegram ? (尝试次数 === 2 ? 5000 : 7000) : (尝试次数 === 2 ? 3000 : 5000);
+        const 超时 = setTimeout(() => 控制器.abort(), 动态超时);
+        try {
+          const 响应 = await fetch(请求, { signal: 控制器.signal });
+          clearTimeout(超时);
+          if (响应.status === 101) {
+            return 响应;
+          }
+        } catch (错误) {
+          clearTimeout(超时);
+        }
+      }
 
-    请求列表 = 请求列表.filter((_, i) => !响应Promises[i].then(res => res === null));
-    尝试次数--;
-
-    if (请求列表.length === 0 && 尝试次数 > 0) {
-      请求列表 = await 构建新请求(访问请求);
-      console.log('所有副 Worker 失败，重置请求列表并重试');
+      尝试次数--;
+      if (尝试次数 > 0) {
+        await new Promise(resolve => setTimeout(resolve, 尝试次数 === 1 ? 1000 : 500));
+      }
     }
-
-    if (尝试次数 > 0 && 请求列表.length > 0) {
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
+    return new Response('所有副Worker请求失败', { status: 400 });
+  } catch (error) {
+    console.error(`WebSocket处理错误: ${error.message}, Stack: ${error.stack}`);
+    return new Response(JSON.stringify({ error: '内部服务器错误' }), { status: 500 });
   }
-
-  console.error('所有副 Worker 均不可用');
-  return new Response('无可用副 Worker', { status: 503 });
 }
 
 function 使用64位加解密(还原混淆字符) {
   try {
     if (!还原混淆字符 || 还原混淆字符.length > 16384) {
-      throw new Error('无效或过长的 Base64 数据');
+      throw new Error('无效的Base64数据');
     }
     还原混淆字符 = 还原混淆字符.replace(/-/g, '+').replace(/_/g, '/');
     const 解密数据 = atob(还原混淆字符);
     return Uint8Array.from(解密数据, c => c.charCodeAt(0)).buffer;
   } catch (e) {
-    console.error(`Base64 解码失败: ${e.message}`);
     return null;
   }
 }
 
 function 验证VL的密钥(字节数组, 起始位置 = 0) {
-  const 十六进制表 = Array.from({ length: 256 }, (_, 值) =>
-    (值 + 256).toString(16).slice(1)
-  );
+  const 十六进制表 = Array.from({ length: 256 }, (_, 值) => (值 + 256).toString(16).slice(1));
   const 分段结构 = [4, 2, 2, 2, 6];
   let 当前索引 = 起始位置;
   const 格式化UUID = 分段结构
-    .map(段长度 =>
-      Array.from({ length: 段长度 }, () => 十六进制表[字节数组[当前索引++]]).join('')
-    )
+    .map(段长度 => Array.from({ length: 段长度 }, () => 十六进制表[字节数组[当前索引++]]).join(''))
     .join('-')
     .toLowerCase();
   return 格式化UUID;
 }
 
+function 验证Telegram地址(解密数据) {
+  const 获取数据定位 = new Uint8Array(解密数据)[17];
+  const 提取端口索引 = 18 + 获取数据定位 + 1;
+  const 提取地址索引 = 提取端口索引 + 2;
+  const 建立地址缓存 = new Uint8Array(解密数据.slice(提取地址索引, 提取地址索引 + 1));
+  const 识别地址类型 = 建立地址缓存[0];
+  let 地址长度 = 0;
+  let 地址信息索引 = 提取地址索引 + 1;
+  let 访问地址 = '';
+  switch (识别地址类型) {
+    case 1:
+      地址长度 = 4;
+      访问地址 = new Uint8Array(解密数据.slice(地址信息索引, 地址信息索引 + 地址长度)).join('.');
+      break;
+    case 2:
+      地址长度 = new Uint8Array(解密数据.slice(地址信息索引, 地址信息索引 + 1))[0];
+      地址信息索引 += 1;
+      访问地址 = new TextDecoder().decode(解密数据.slice(地址信息索引, 地址信息索引 + 地址长度));
+      break;
+    case 3:
+      地址长度 = 16;
+      const dataView = new DataView(解密数据.slice(地址信息索引, 地址信息索引 + 地址长度));
+      const ipv6 = [];
+      for (let i = 0; i < 8; i++) { ipv6.push(dataView.getUint16(i * 2).toString(16)); }
+      访问地址 = ipv6.join(':');
+      break;
+  }
+  return 保活域名名单.some(规则 => 匹配域名(访问地址, 规则));
+}
+
 async function 构建新请求(访问请求) {
-  const 标头 = new Headers(访问请求.headers);
+  const 标头 = new Headers();
+  标头.set('Upgrade', 访问请求.headers.get('Upgrade'));
+  标头.set('Connection', 访问请求.headers.get('Connection'));
+  标头.set('sec-websocket-protocol', 访问请求.headers.get('sec-websocket-protocol'));
   标头.set('key-open', 私钥开关 ? 'true' : 'false');
   标头.set('proxyip-open', 启用反代功能 ? 'true' : 'false');
   标头.set('socks5-open', 启用SOCKS5反代 ? 'true' : 'false');
   标头.set('socks5-global', 启用SOCKS5全局反代 ? 'true' : 'false');
   标头.set('safe-key', 哎呀呀这是我的ID啊);
   标头.set('kongliu-open', 启动控流机制 ? 'true' : 'false');
-  
-  const 请求URL = new URL(访问请求.url);
-  const 查询参数proxyip = 请求URL.searchParams.get('proxyip');
-  let 使用的反代IP = 反代IP;
-  
-  if (查询参数proxyip) {
-    使用的反代IP = 查询参数proxyip;
-  }
-
-  const 反代IP数组 = Array.isArray(使用的反代IP) ? 使用的反代IP : [使用的反代IP];
-  const 反代 = 反代IP数组[0];
 
   const 请求列表 = [];
-  const 随机选择 = (数组) => {
-    const arr = Array.isArray(数组) ? 数组 : [数组];
-    return arr[Math.floor(Math.random() * arr.length)];
-  };
+  const 随机选择 = (数组) => Array.isArray(数组) ? 数组[Math.floor(Math.random() * 数组.length)] : 数组;
   
-  for (const 地址 of 转发地址) {
+  const 可用副Worker地址 = 下一级副Worker地址.length > 0 ? 下一级副Worker地址 : [];
+
+  const 唯一地址 = new Set(转发地址);
+  for (const 地址 of 唯一地址) {
+    const 反代 = 随机选择(反代IP);
     const socks5 = 随机选择(我的SOCKS5账号);
     标头.set('proxyip', 反代);
     标头.set('socks5', socks5);
-    const 目标地址 = `https://${地址}`;
+    
+    if (Math.random() > 0.5 && 可用副Worker地址.length > 0) {
+      标头.set('next-vice-worker', 随机选择(可用副Worker地址));
+    }
+    
+    const 目标地址 = `https://${地址}/api/proxy.json`;
     const 新请求 = new Request(目标地址, {
       headers: 标头,
       method: 访问请求.method
@@ -264,7 +314,7 @@ if (私钥开关) {
 } else {
   我的私钥 = "";
 }
-let 缓存订阅页面 = null;
+
 function 给我订阅页面(哎呀呀这是我的ID啊, hostName) {
   if (缓存订阅页面) return 缓存订阅页面;
   缓存订阅页面 = `
@@ -276,8 +326,10 @@ function 给我订阅页面(哎呀呀这是我的ID啊, hostName) {
   `;
   return 缓存订阅页面;
 }
+
 function 给我通用配置文件(hostName) {
   if (私钥开关) return "请先关闭私钥功能";
+  if (缓存通用配置文件) return 缓存通用配置文件;
   const 节点列表 = 我的优选.concat(`${hostName}:443#备用节点`);
   const 配置 = [];
   for (const 获取优选 of 节点列表) {
@@ -285,12 +337,15 @@ function 给我通用配置文件(hostName) {
     const [地址端口, 节点名字 = 我的节点名字] = 主内容.split("#");
     const [地址, 端口 = '443'] = 地址端口.split(":");
     配置.push(
-      `${转码}${转码2}${符号}${哎呀呀这是我的VL密钥}@${地址}:${端口}?encryption=none&security=${tls === 'notls' ? 'none' : 'tls'}&sni=${hostName}&type=ws&host=${hostName}&path=%2F%3Fed%3D2560#${节点名字}`
+      `${转码}${转码2}${符号}${哎呀呀这是我的VL密钥}@${地址}:${端口}?encryption=none&security=${tls === 'notls' ? 'none' : 'tls'}&sni=${hostName}&type=ws&host=${hostName}&path=%2Fstatic%2Fconfig.json%3Fed%3D2560#${节点名字}`
     );
   }
-  return 配置.join("\n");
+  缓存通用配置文件 = 配置.join("\n");
+  return 缓存通用配置文件;
 }
+
 function 给我小动物配置文件(hostName, 规则集配置 = null, 规则配置 = null) {
+  if (缓存小动物配置文件) return 缓存小动物配置文件;
   const 唯一节点映射 = new Map();
   const 节点配置列表 = [];
   const 代理配置列表 = [];
@@ -325,7 +380,7 @@ function 给我小动物配置文件(hostName, 规则集配置 = null, 规则配
   sni: ${hostName}
   network: ws
   ws-opts:
-    path: "/?ed=2560"
+    path: "/static/config.json?ed=2560"
     headers:
       Host: ${hostName}
       ${我的私钥}`);
@@ -351,15 +406,30 @@ function 给我小动物配置文件(hostName, 规则集配置 = null, 规则配
     behavior: ipcidr
     url: "https://gh-proxy.com/raw.githubusercontent.com/Loyalsoldier/clash-rules/release/cncidr.txt"
     path: ./ruleset/cncidr.yaml
+    interval: 86400
+  geosite-cn:
+    type: http
+    behavior: domain
+    url: "https://gh-proxy.com/raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/geosite-cn.txt"
+    path: ./ruleset/geosite-cn.yaml
     interval: 86400`;
+
   const 默认规则配置 = `
 - RULE-SET,AntiAd,REJECT
 - RULE-SET,lancidr,DIRECT,no-resolve
 - RULE-SET,cncidr,DIRECT,no-resolve
+- RULE-SET,geosite-cn,DIRECT
 - GEOSITE,cn,DIRECT
 - GEOIP,CN,DIRECT,no-resolve
 - MATCH,漏网之鱼,🚀 负载均衡-轮询`;
-  return `
+
+  const 国内直连代理组 = `
+- name: 🏠 国内直连
+  type: select
+  proxies:
+    - DIRECT`;
+
+  缓存小动物配置文件 = `
 dns:
   nameserver:
     - 114.114.114.114
@@ -372,11 +442,13 @@ ${规则集配置 !== null ? 规则集配置 : 默认规则集配置}
 proxies:
 ${节点配置}
 proxy-groups:
+${国内直连代理组}
 - name: 🚀 负载均衡-散列
   type: load-balance
   strategy: consistent-hashing
   url: http://www.gstatic.com/generate_204
   interval: 300
+  disable-udp: true
   unified-delay: true
   proxies:
 ${代理配置}
@@ -385,6 +457,7 @@ ${代理配置}
   strategy: round-robin
   url: http://www.gstatic.com/generate_204
   interval: 300
+  disable-udp: true
   unified-delay: true
   proxies:
 ${代理配置}
@@ -411,4 +484,29 @@ ${代理配置}
 rules:
 ${规则配置 !== null ? 规则配置 : 默认规则配置}
 `;
+  return 缓存小动物配置文件;
+}
+
+const 保活域名名单 = [
+  '*.t.me', 't.me',
+  '*.telegram.org',
+  '*.telegram.me',
+  '*.telegra.ph',
+  '*.cdn-telegram.org',
+  'smtp.office365.com',
+  '*.tdesktop.com',
+  '*.telesco.pe',
+  'telegram.org',
+  '*.telegram.dog',
+];
+
+function 匹配域名(地址, 通配规则) {
+  if (通配规则.startsWith('*.')) {
+    const 根域 = 通配规则.slice(2);
+    return (
+      地址 === 根域 ||
+      地址.endsWith('.' + 根域)
+    );
+  }
+  return 地址 === 通配规则;
 }
